@@ -2813,9 +2813,9 @@ decay_rate = 0.05
                     .ok()
                     .and_then(|s| toml::from_str::<librefang_types::config::KernelConfig>(&s).ok())
                     .map(|c| c.api_listen)
-                    .unwrap_or_else(|| "127.0.0.1:4545".to_string())
+                    .unwrap_or_else(|| librefang_types::config::DEFAULT_API_LISTEN.to_string())
             } else {
-                "127.0.0.1:4545".to_string()
+                librefang_types::config::DEFAULT_API_LISTEN.to_string()
             }
         };
         if !json {
