@@ -150,6 +150,8 @@ jobs:
           # Strip date suffix (e.g. 0.5.0-20260316 → 0.5.0)
           VERSION="${TAG%-*}"
           sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+          sed -i '/^\[dependencies\]/,/^```/ s/librefang = "[^"]*"/librefang = "'"$MAJOR_MINOR"'"/' README.md
           echo "Publishing librefang@$VERSION"
           grep '^version' Cargo.toml
 
