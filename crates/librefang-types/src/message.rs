@@ -9,6 +9,13 @@ pub struct Message {
     pub role: Role,
     /// The content of the message.
     pub content: MessageContent,
+    /// Whether this message is pinned (protected from overflow trimming).
+    ///
+    /// Pinned messages are preserved during context overflow recovery,
+    /// ensuring critical early messages (system constraints, user rules,
+    /// important context) are not lost when trimming.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// The role of a message sender in an LLM conversation.
@@ -89,6 +96,11 @@ pub enum ContentBlock {
     Thinking {
         /// The thinking/reasoning text.
         thinking: String,
+        /// Provider-specific metadata (e.g. Gemini `thoughtSignature`).
+        /// Opaque to the core — drivers read/write this to round-trip
+        /// fields the provider requires on subsequent requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// Catch-all for unrecognized content block types (forward compatibility).
     #[serde(other)]
@@ -141,7 +153,7 @@ impl MessageContent {
                 .map(|b| match b {
                     ContentBlock::Text { text, .. } => text.len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
-                    ContentBlock::Thinking { thinking } => thinking.len(),
+                    ContentBlock::Thinking { thinking, .. } => thinking.len(),
                     ContentBlock::ToolUse { .. }
                     | ContentBlock::Image { .. }
                     | ContentBlock::Unknown => 0,
@@ -172,6 +184,7 @@ impl Message {
         Self {
             role: Role::System,
             content: MessageContent::Text(content.into()),
+            pinned: false,
         }
     }
 
@@ -180,6 +193,7 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Text(content.into()),
+            pinned: false,
         }
     }
 
@@ -188,6 +202,7 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Blocks(blocks),
+            pinned: false,
         }
     }
 
@@ -196,6 +211,7 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: MessageContent::Text(content.into()),
+            pinned: false,
         }
     }
 }

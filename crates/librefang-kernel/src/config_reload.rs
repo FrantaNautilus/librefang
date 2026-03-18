@@ -1,11 +1,11 @@
 //! Config hot-reload — diffs two `KernelConfig` instances and produces a `ReloadPlan`.
 //!
 //! **Hot-reload safe**: channels, skills, usage footer, web config, browser,
-//! approval policy, cron settings, webhook triggers, extensions.
+//! approval policy, cron settings, webhook triggers, extensions, tool policy.
 //!
 //! **No-op** (informational only): log_level, language, mode.
 //!
-//! **Restart required**: api_listen, api_key, network, memory, stable_prefix_mode.
+//! **Restart required**: api_listen, api_key, network, memory, proxy, stable_prefix_mode.
 
 use librefang_types::config::{KernelConfig, ReloadMode};
 use tracing::{info, warn};
@@ -45,6 +45,8 @@ pub enum HotAction {
     ReloadProviderUrls,
     /// Default model changed — update in-place without restart.
     UpdateDefaultModel,
+    /// Tool policy changed — update tool filtering rules.
+    UpdateToolPolicy,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +165,14 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
             .push("memory config changed".to_string());
     }
 
+    // Proxy config is applied once during boot and exported into process env,
+    // so changes require a restart to rebuild clients consistently.
+    if field_changed(&old.proxy, &new.proxy) {
+        plan.restart_required = true;
+        plan.restart_reasons
+            .push("proxy config changed".to_string());
+    }
+
     // Default model — hot-reloadable (just swap config fields, new agents pick it up)
     if field_changed(&old.default_model, &new.default_model) {
         plan.hot_actions.push(HotAction::UpdateDefaultModel);
@@ -248,6 +258,10 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
 
     if field_changed(&old.provider_urls, &new.provider_urls) {
         plan.hot_actions.push(HotAction::ReloadProviderUrls);
+    }
+
+    if field_changed(&old.tool_policy, &new.tool_policy) {
+        plan.hot_actions.push(HotAction::UpdateToolPolicy);
     }
 
     if field_changed(&old.provider_api_keys, &new.provider_api_keys) {
@@ -445,6 +459,19 @@ mod tests {
             .any(|r| r.contains("stable_prefix_mode")));
     }
 
+    #[test]
+    fn test_proxy_config_requires_restart() {
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.proxy.http_proxy = Some("http://proxy.example.com:8080".to_string());
+        let plan = build_reload_plan(&a, &b);
+        assert!(plan.restart_required);
+        assert!(plan
+            .restart_reasons
+            .iter()
+            .any(|r| r.contains("proxy config changed")));
+    }
+
     // -----------------------------------------------------------------------
     // Hot-reload tests
     // -----------------------------------------------------------------------
@@ -504,6 +531,20 @@ mod tests {
         let plan = build_reload_plan(&a, &b);
         assert!(!plan.restart_required);
         assert!(plan.hot_actions.contains(&HotAction::ReloadProviderUrls));
+    }
+
+    #[test]
+    fn test_tool_policy_hot_reload() {
+        use librefang_types::tool_policy::{PolicyEffect, ToolPolicyRule};
+        let a = default_cfg();
+        let mut b = default_cfg();
+        b.tool_policy.global_rules.push(ToolPolicyRule {
+            pattern: "shell_*".to_string(),
+            effect: PolicyEffect::Deny,
+        });
+        let plan = build_reload_plan(&a, &b);
+        assert!(!plan.restart_required);
+        assert!(plan.hot_actions.contains(&HotAction::UpdateToolPolicy));
     }
 
     // -----------------------------------------------------------------------

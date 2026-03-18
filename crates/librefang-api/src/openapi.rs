@@ -77,6 +77,7 @@ use crate::types;
         routes::list_agent_files,
         routes::get_agent_file,
         routes::set_agent_file,
+        routes::delete_agent_file,
         routes::upload_file,
         routes::serve_upload,
         routes::get_agent_deliveries,
@@ -119,6 +120,7 @@ use crate::types;
 
         // ── MCP Servers ──
         routes::list_mcp_servers,
+        routes::get_mcp_server,
         routes::add_mcp_server,
         routes::update_mcp_server,
         routes::delete_mcp_server,
@@ -131,6 +133,7 @@ use crate::types;
 
         // ── Integrations ──
         routes::list_integrations,
+        routes::get_integration,
         routes::list_available_integrations,
         routes::add_integration,
         routes::remove_integration,
@@ -147,6 +150,7 @@ use crate::types;
         routes::add_custom_model,
         routes::remove_custom_model,
         routes::list_providers,
+        routes::get_provider,
         routes::set_provider_key,
         routes::delete_provider_key,
         routes::test_provider,
@@ -189,6 +193,7 @@ use crate::types;
 
         // ── Sessions ──
         routes::list_sessions,
+        routes::get_session,
         routes::delete_session,
         routes::set_session_label,
         routes::find_session_by_label,
@@ -221,6 +226,7 @@ use crate::types;
         // ── Approvals ──
         routes::list_approvals,
         routes::create_approval,
+        routes::get_approval,
         routes::approve_request,
         routes::reject_request,
 

@@ -17,6 +17,7 @@ use librefang_api::ws;
 use librefang_kernel::LibreFangKernel;
 use librefang_runtime::audit::AuditAction;
 use librefang_types::config::{DefaultModelConfig, KernelConfig};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tower::ServiceExt;
@@ -29,6 +30,7 @@ use tower_http::trace::TraceLayer;
 
 struct TestServer {
     base_url: String,
+    config_path: PathBuf,
     state: Arc<AppState>,
     _tmp: tempfile::TempDir,
 }
@@ -81,6 +83,9 @@ async fn start_test_server_with_provider(
         },
         ..KernelConfig::default()
     };
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap())
+        .expect("Failed to write test config");
 
     let kernel = LibreFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
@@ -103,6 +108,10 @@ async fn start_test_server_with_provider(
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
         .route("/api/status", axum::routing::get(routes::status))
+        .route(
+            "/api/config/reload",
+            axum::routing::post(routes::config_reload),
+        )
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
@@ -167,6 +176,7 @@ async fn start_test_server_with_provider(
 
     TestServer {
         base_url: format!("http://{}", addr),
+        config_path,
         state,
         _tmp: tmp,
     }
@@ -250,7 +260,7 @@ memory_write = ["self.*"]
 #[tokio::test]
 async fn test_health_endpoint() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .get(format!("{}/api/health", server.base_url))
@@ -275,7 +285,7 @@ async fn test_health_endpoint() {
 #[tokio::test]
 async fn test_status_endpoint() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .get(format!("{}/api/status", server.base_url))
@@ -422,9 +432,60 @@ async fn test_build_router_unauthorized_responses_include_api_version_header() {
 }
 
 #[tokio::test]
-async fn test_spawn_list_kill_agent() {
+async fn test_config_reload_reports_proxy_changes_require_restart() {
     let server = start_test_server().await;
     let client = reqwest::Client::new();
+
+    let mut config: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&server.config_path).unwrap()).unwrap();
+    let table = config.as_table_mut().unwrap();
+    table.insert(
+        "home_dir".to_string(),
+        toml::Value::String(server.state.kernel.config.home_dir.display().to_string()),
+    );
+    table.insert(
+        "data_dir".to_string(),
+        toml::Value::String(server.state.kernel.config.data_dir.display().to_string()),
+    );
+    table.insert(
+        "proxy".to_string(),
+        toml::Value::Table(toml::map::Map::from_iter([(
+            "http_proxy".to_string(),
+            toml::Value::String("http://proxy.example.com:8080".to_string()),
+        )])),
+    );
+    std::fs::write(
+        &server.config_path,
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+
+    let resp = client
+        .post(format!("{}/api/config/reload", server.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "partial");
+    assert_eq!(body["restart_required"], true);
+    assert!(
+        body["restart_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .any(|reason| reason.contains("proxy config changed")),
+        "unexpected reload response: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_spawn_list_kill_agent() {
+    let server = start_test_server().await;
+    let client = librefang_runtime::http_client::new_client();
 
     // --- Spawn ---
     let resp = client
@@ -478,7 +539,7 @@ async fn test_spawn_list_kill_agent() {
 #[tokio::test]
 async fn test_agent_session_empty() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Spawn agent
     let resp = client
@@ -508,7 +569,7 @@ async fn test_agent_session_empty() {
 #[tokio::test]
 async fn test_agent_monitoring_endpoints() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .post(format!("{}/api/agents", server.base_url))
@@ -571,7 +632,7 @@ async fn test_send_message_with_llm() {
     }
 
     let server = start_test_server_with_llm().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Spawn
     let resp = client
@@ -619,7 +680,7 @@ async fn test_send_message_with_llm() {
 #[tokio::test]
 async fn test_workflow_crud() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Spawn agent for workflow
     let resp = client
@@ -671,7 +732,7 @@ async fn test_workflow_crud() {
 #[tokio::test]
 async fn test_trigger_crud() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Spawn agent for trigger
     let resp = client
@@ -748,7 +809,7 @@ async fn test_trigger_crud() {
 #[tokio::test]
 async fn test_invalid_agent_id_returns_400() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Send message to invalid ID
     let resp = client
@@ -781,7 +842,7 @@ async fn test_invalid_agent_id_returns_400() {
 #[tokio::test]
 async fn test_kill_nonexistent_agent_returns_404() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let fake_id = uuid::Uuid::new_v4();
     let resp = client
@@ -795,7 +856,7 @@ async fn test_kill_nonexistent_agent_returns_404() {
 #[tokio::test]
 async fn test_spawn_invalid_manifest_returns_400() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .post(format!("{}/api/agents", server.base_url))
@@ -811,7 +872,7 @@ async fn test_spawn_invalid_manifest_returns_400() {
 #[tokio::test]
 async fn test_request_id_header_is_uuid() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .get(format!("{}/api/health", server.base_url))
@@ -834,7 +895,7 @@ async fn test_request_id_header_is_uuid() {
 #[tokio::test]
 async fn test_multiple_agents_lifecycle() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Spawn 3 agents
     let mut ids = Vec::new();
@@ -943,6 +1004,9 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         },
         ..KernelConfig::default()
     };
+    let config_path = tmp.path().join("config.toml");
+    std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap())
+        .expect("Failed to write test config");
 
     let kernel = LibreFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
@@ -1033,6 +1097,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
 
     TestServer {
         base_url: format!("http://{}", addr),
+        config_path,
         state,
         _tmp: tmp,
     }
@@ -1041,7 +1106,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
 #[tokio::test]
 async fn test_auth_health_is_public() {
     let server = start_test_server_with_auth("secret-key-123").await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // /api/health should be accessible without auth
     let resp = client
@@ -1055,7 +1120,7 @@ async fn test_auth_health_is_public() {
 #[tokio::test]
 async fn test_auth_rejects_no_token() {
     let server = start_test_server_with_auth("secret-key-123").await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Protected endpoint without auth header → 401
     // Note: /api/status is public (dashboard needs it), so use a protected endpoint
@@ -1072,7 +1137,7 @@ async fn test_auth_rejects_no_token() {
 #[tokio::test]
 async fn test_auth_rejects_wrong_token() {
     let server = start_test_server_with_auth("secret-key-123").await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Wrong bearer token → 401
     // Note: /api/status is public (dashboard needs it), so use a protected endpoint
@@ -1090,7 +1155,7 @@ async fn test_auth_rejects_wrong_token() {
 #[tokio::test]
 async fn test_auth_accepts_correct_token() {
     let server = start_test_server_with_auth("secret-key-123").await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Correct bearer token → 200
     let resp = client
@@ -1108,7 +1173,7 @@ async fn test_auth_accepts_correct_token() {
 async fn test_auth_disabled_when_no_key() {
     // Empty API key = auth disabled
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // Protected endpoint accessible without auth when no key is configured
     let resp = client
@@ -1126,7 +1191,7 @@ async fn test_auth_disabled_when_no_key() {
 #[tokio::test]
 async fn test_list_tools() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .get(format!("{}/api/tools", server.base_url))
@@ -1143,7 +1208,7 @@ async fn test_list_tools() {
 #[tokio::test]
 async fn test_get_tool_found() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     // First list tools to get a known tool name
     let resp = client
@@ -1171,7 +1236,7 @@ async fn test_get_tool_found() {
 #[tokio::test]
 async fn test_get_tool_not_found() {
     let server = start_test_server().await;
-    let client = reqwest::Client::new();
+    let client = librefang_runtime::http_client::new_client();
 
     let resp = client
         .get(format!(
