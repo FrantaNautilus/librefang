@@ -160,7 +160,7 @@ unic-langid = "0.9"
 rumqttc = "0.25"
 
 # Sync HTTP client (for registry sync without async runtime)
-ureq = "2"
+ureq = "3"
 
 # Tar archive extraction
 flate2 = "1"
