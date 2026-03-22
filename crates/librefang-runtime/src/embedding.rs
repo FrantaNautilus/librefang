@@ -746,21 +746,16 @@ mod tests {
         );
     }
 
+    // AWS example credentials from official documentation — NOT real secrets.
+    // https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+    const TEST_AWS_ACCESS_KEY: &str = TEST_AWS_ACCESS_KEY;
+    const TEST_AWS_SECRET_KEY: &str = TEST_AWS_SECRET_KEY;
+
     #[test]
     fn test_sigv4_signing_key_deterministic() {
         // Ensure the signing key derivation is deterministic.
-        let key1 = sigv4_signing_key(
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-            "20260322",
-            "us-east-1",
-            "bedrock",
-        );
-        let key2 = sigv4_signing_key(
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-            "20260322",
-            "us-east-1",
-            "bedrock",
-        );
+        let key1 = sigv4_signing_key(TEST_AWS_SECRET_KEY, "20260322", "us-east-1", "bedrock");
+        let key2 = sigv4_signing_key(TEST_AWS_SECRET_KEY, "20260322", "us-east-1", "bedrock");
         assert_eq!(key1, key2);
         assert_eq!(key1.len(), 32); // HMAC-SHA256 output is 32 bytes
     }
@@ -770,8 +765,8 @@ mod tests {
         use chrono::TimeZone;
         let now = chrono::Utc.with_ymd_and_hms(2026, 3, 22, 12, 0, 0).unwrap();
         let (auth, amz_date, payload_hash) = sigv4_auth_header(
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            TEST_AWS_ACCESS_KEY,
+            TEST_AWS_SECRET_KEY,
             "us-east-1",
             "bedrock",
             "bedrock-runtime.us-east-1.amazonaws.com",
@@ -780,7 +775,8 @@ mod tests {
             &now,
         );
 
-        assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260322/us-east-1/bedrock/aws4_request"));
+        let expected_prefix = format!("AWS4-HMAC-SHA256 Credential={TEST_AWS_ACCESS_KEY}/20260322/us-east-1/bedrock/aws4_request");
+        assert!(auth.starts_with(&expected_prefix));
         assert!(auth.contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date"));
         assert!(auth.contains("Signature="));
         assert_eq!(amz_date, "20260322T120000Z");
@@ -817,11 +813,8 @@ mod tests {
         let had_key = std::env::var("AWS_ACCESS_KEY_ID").ok();
         let had_secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
         let had_region = std::env::var("AWS_REGION").ok();
-        std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE");
-        std::env::set_var(
-            "AWS_SECRET_ACCESS_KEY",
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-        );
+        std::env::set_var("AWS_ACCESS_KEY_ID", TEST_AWS_ACCESS_KEY);
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", TEST_AWS_SECRET_KEY);
         std::env::set_var("AWS_REGION", "us-west-2");
 
         let result =
@@ -849,11 +842,8 @@ mod tests {
         // When custom_base_url is passed for bedrock, it's treated as a region override.
         let had_key = std::env::var("AWS_ACCESS_KEY_ID").ok();
         let had_secret = std::env::var("AWS_SECRET_ACCESS_KEY").ok();
-        std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE");
-        std::env::set_var(
-            "AWS_SECRET_ACCESS_KEY",
-            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-        );
+        std::env::set_var("AWS_ACCESS_KEY_ID", TEST_AWS_ACCESS_KEY);
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", TEST_AWS_SECRET_KEY);
 
         let result = create_embedding_driver(
             "bedrock",
