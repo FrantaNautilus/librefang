@@ -98,6 +98,7 @@ export {
   getWorkflowRun,
   listWorkflowTemplates,
   // terminal
+  getTerminalHealth,
   listTerminalWindows,
   // auto-dream
   getAutoDreamStatus,
@@ -238,5 +239,6 @@ export type {
   McpAuthStatusResponse,
   MemoryItem,
   ModelOverrides,
+  TerminalHealth,
   TerminalWindow,
 } from "../../api";
