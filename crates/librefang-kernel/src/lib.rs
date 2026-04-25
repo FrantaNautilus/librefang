@@ -28,6 +28,7 @@ pub mod scheduler;
 pub mod session_lifecycle;
 pub mod session_policy;
 pub mod supervisor;
+pub mod trajectory;
 pub mod triggers;
 pub mod whatsapp_gateway;
 pub mod wizard;
