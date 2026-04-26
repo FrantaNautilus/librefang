@@ -521,6 +521,16 @@ pub struct LibreFangKernel {
     /// directory could not be resolved at boot.
     pub(crate) checkpoint_manager:
         Option<Arc<librefang_runtime::checkpoint_manager::CheckpointManager>>,
+    /// Live, atomically-swappable handle to `KernelConfig.taint_rules`.
+    ///
+    /// The kernel mirrors `config.load().taint_rules` into this swap on boot
+    /// and on every config reload (see [`Self::reload_config`]). Each
+    /// connected MCP server holds an [`Arc::clone`] of this same swap as its
+    /// `taint_rule_sets` field, so reading via `.load()` at scan time always
+    /// returns the latest registry — without restarting the server. The
+    /// scanner takes a single `.load()` per call so a mid-call reload can't
+    /// change the rule set under an in-flight tool invocation.
+    pub(crate) taint_rules_swap: librefang_runtime::mcp::TaintRuleSetsHandle,
     /// Pluggable hook that swaps the live tracing `EnvFilter` when
     /// `config.log_level` changes via hot-reload. Injected by the binary
     /// (`librefang-cli` for the daemon) post-construction; absent for
@@ -721,6 +731,16 @@ impl LibreFangKernel {
         roots
     }
 
+    /// Hand out an [`Arc::clone`] of the kernel's live taint-rules swap to a
+    /// fresh `McpServerConfig`. All connected servers share the same swap,
+    /// so `[[taint_rules]]` edits applied via [`Self::reload_config`]
+    /// immediately reach every server's next scan call. The scanner takes a
+    /// single `.load()` per tool call to keep the rule view stable across a
+    /// single argument-tree walk.
+    fn snapshot_taint_rules(&self) -> librefang_runtime::mcp::TaintRuleSetsHandle {
+        std::sync::Arc::clone(&self.taint_rules_swap)
+    }
+
     /// Build the default list of root directories to advertise to MCP servers
     /// via the MCP Roots capability.
     ///
@@ -850,6 +870,7 @@ impl LibreFangKernel {
                 oauth_config: server_config.oauth.clone(),
                 taint_scanning: server_config.taint_scanning,
                 taint_policy: server_config.taint_policy.clone(),
+                taint_rule_sets: self.snapshot_taint_rules(),
                 roots: server_roots,
             };
 
@@ -2706,6 +2727,13 @@ impl LibreFangKernel {
             None => config.data_dir.join("audit.anchor"),
         };
         let hooks_dir = config.home_dir.join("hooks");
+        // Snapshot the initial taint rule registry into a shared
+        // `Arc<ArcSwap<...>>`. This swap is the single source of truth read
+        // by every connected MCP server's scanner — `Self::reload_config`
+        // calls `.store(...)` on it so config edits propagate without
+        // restarting servers.
+        let initial_taint_rules =
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(config.taint_rules.clone()));
         let kernel = Self {
             home_dir_boot: config.home_dir.clone(),
             data_dir_boot: config.data_dir.clone(),
@@ -2808,6 +2836,7 @@ impl LibreFangKernel {
                     librefang_runtime::checkpoint_manager::CheckpointManager::new(cp_dir),
                 ))
             },
+            taint_rules_swap: initial_taint_rules,
             log_reloader: OnceLock::new(),
         };
 
@@ -9592,6 +9621,20 @@ system_prompt = "You are a helpful assistant."
         if should_apply_hot(old_cfg.reload.mode, &plan) {
             let _write_guard = self.config_reload_lock.write().await;
             self.apply_hot_actions_inner(&plan, &new_config);
+            // Push the new `[[taint_rules]]` registry into the shared swap
+            // BEFORE swapping `self.config`. Connected MCP servers read from
+            // this swap on every scan; updating it now means the next tool
+            // call inherits the new rules without restarting the server.
+            // Order: taint_rules first, then config — that way no scanner
+            // sees a window where `self.config.load().taint_rules` and the
+            // `taint_rules_swap` snapshot disagree.
+            //
+            // The reload-plan diff (`build_reload_plan`) emits
+            // `HotAction::ReloadTaintRules` whenever `[[taint_rules]]`
+            // changes, so `should_apply_hot` reaches this branch on those
+            // edits even when no other hot action fires.
+            self.taint_rules_swap
+                .store(std::sync::Arc::new(new_config.taint_rules.clone()));
             self.config.store(std::sync::Arc::new(new_config));
         }
 
@@ -9762,6 +9805,50 @@ system_prompt = "You are a helpful assistant."
                 HotAction::ReloadMcpServers => {
                     info!("Hot-reload: MCP server config updated");
                     let new_mcp = new_config.mcp_servers.clone();
+
+                    // Snapshot the previous effective list so we can diff
+                    // which entries actually changed. Existing connections
+                    // hold a per-server `McpServerConfig` clone (including
+                    // `taint_policy`/`taint_scanning`/`headers`/`env`/
+                    // `transport`), so any field that is not behind a shared
+                    // `ArcSwap` (only `taint_rule_sets` is) requires a
+                    // disconnect+reconnect for the new value to reach
+                    // in-flight tool calls. Without this, edits via PUT
+                    // `/api/mcp/servers/{name}`, CLI `config.toml` edits,
+                    // or any non-PATCH path would silently keep the old
+                    // policy alive on already-connected servers.
+                    let old_mcp = self
+                        .effective_mcp_servers
+                        .read()
+                        .map(|s| s.clone())
+                        .unwrap_or_default();
+
+                    let new_by_name: std::collections::HashMap<&str, _> =
+                        new_mcp.iter().map(|s| (s.name.as_str(), s)).collect();
+                    let mut to_reconnect: Vec<String> = Vec::new();
+                    for old_entry in &old_mcp {
+                        match new_by_name.get(old_entry.name.as_str()) {
+                            None => {
+                                // Removed: stale connection still alive in
+                                // `mcp_connections` until we evict it.
+                                to_reconnect.push(old_entry.name.clone());
+                            }
+                            Some(new_entry) => {
+                                // Modified: serialize-compare is robust
+                                // against future field additions and avoids
+                                // forcing `PartialEq` onto every nested
+                                // config type (`McpTaintPolicy`,
+                                // `McpOAuthConfig`, transport variants…).
+                                let old_json = serde_json::to_string(old_entry).unwrap_or_default();
+                                let new_json =
+                                    serde_json::to_string(*new_entry).unwrap_or_default();
+                                if old_json != new_json {
+                                    to_reconnect.push(old_entry.name.clone());
+                                }
+                            }
+                        }
+                    }
+
                     let mut effective = self
                         .effective_mcp_servers
                         .write()
@@ -9783,13 +9870,47 @@ system_prompt = "You are a helpful assistant."
                     }
                     let count = new_mcp.len();
                     *effective = new_mcp;
-                    info!(
-                        "Hot-reload: effective MCP server list rebuilt ({count} total, \
-                         connections will be re-established on next agent message)"
-                    );
+                    drop(effective);
+
                     // Bump MCP generation so tool list caches are invalidated
                     self.mcp_generation
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    if to_reconnect.is_empty() {
+                        info!(
+                            "Hot-reload: effective MCP server list rebuilt \
+                             ({count} total, no reconnects needed)"
+                        );
+                    } else {
+                        info!(
+                            servers = ?to_reconnect,
+                            "Hot-reload: effective MCP server list rebuilt \
+                             ({count} total, {} server(s) need reconnection \
+                             to apply config changes)",
+                            to_reconnect.len()
+                        );
+                        // Fire-and-forget: `disconnect_mcp_server` drops the
+                        // stale slot and `connect_mcp_servers` is idempotent
+                        // (re-adds servers missing from `mcp_connections`
+                        // using the now-updated effective list).
+                        if let Some(weak) = self.self_handle.get() {
+                            if let Some(kernel) = weak.upgrade() {
+                                tokio::spawn(async move {
+                                    for name in &to_reconnect {
+                                        kernel.disconnect_mcp_server(name).await;
+                                    }
+                                    kernel.connect_mcp_servers().await;
+                                });
+                            } else {
+                                tracing::warn!(
+                                    server_count = to_reconnect.len(),
+                                    "Hot-reload: kernel self-handle dropped \
+                                     — MCP servers will keep stale config \
+                                     until next restart"
+                                );
+                            }
+                        }
+                    }
                 }
                 HotAction::ReloadA2aConfig => {
                     info!(
@@ -9815,6 +9936,16 @@ system_prompt = "You are a helpful assistant."
                 }
                 HotAction::UpdateDashboardCredentials => {
                     info!("Hot-reload: dashboard credentials updated — config swap is sufficient");
+                }
+                HotAction::ReloadTaintRules => {
+                    // Actual swap is performed by the caller (`reload_config`)
+                    // after this match completes — this arm is informational
+                    // only. Logging here keeps the action visible alongside
+                    // every other hot reload in the audit trail.
+                    info!(
+                        "Hot-reload: [[taint_rules]] registry updated — \
+                         next MCP scan will see new rule sets without reconnect"
+                    );
                 }
                 HotAction::ReloadLogLevel(level) => match self.log_reloader.get() {
                     Some(reloader) => match reloader.reload(level) {
@@ -11685,6 +11816,7 @@ system_prompt = "You are a helpful assistant."
                 oauth_config: server_config.oauth.clone(),
                 taint_scanning: server_config.taint_scanning,
                 taint_policy: server_config.taint_policy.clone(),
+                taint_rule_sets: self.snapshot_taint_rules(),
                 roots: self.mcp_roots_for_server(server_config),
             };
 
@@ -11834,6 +11966,7 @@ system_prompt = "You are a helpful assistant."
             oauth_config: server_config.oauth.clone(),
             taint_scanning: server_config.taint_scanning,
             taint_policy: server_config.taint_policy.clone(),
+            taint_rule_sets: self.snapshot_taint_rules(),
             roots: self.mcp_roots_for_server(&server_config),
         };
 
@@ -11958,6 +12091,7 @@ system_prompt = "You are a helpful assistant."
                 oauth_config: server_config.oauth.clone(),
                 taint_scanning: server_config.taint_scanning,
                 taint_policy: server_config.taint_policy.clone(),
+                taint_rule_sets: self.snapshot_taint_rules(),
                 roots: self.mcp_roots_for_server(server_config),
             };
 
@@ -12104,6 +12238,7 @@ system_prompt = "You are a helpful assistant."
             oauth_config: server_config.oauth.clone(),
             taint_scanning: server_config.taint_scanning,
             taint_policy: server_config.taint_policy.clone(),
+            taint_rule_sets: self.snapshot_taint_rules(),
             roots: self.mcp_roots_for_server(&server_config),
         };
 
