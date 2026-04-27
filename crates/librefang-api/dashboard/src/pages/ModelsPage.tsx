@@ -11,7 +11,7 @@ import { Input } from "../components/ui/Input";
 import { PageHeader } from "../components/ui/PageHeader";
 import { ListSkeleton } from "../components/ui/Skeleton";
 import { EmptyState } from "../components/ui/EmptyState";
-import { Modal } from "../components/ui/Modal";
+import { DrawerPanel } from "../components/ui/DrawerPanel";
 import { useCreateShortcut } from "../lib/useCreateShortcut";
 import { useUIStore } from "../lib/store";
 import {
@@ -165,6 +165,99 @@ function ModelCard({ m, hidden, onOpen, onSettings, onToggleHidden, onDelete, pe
             </button>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ModelDetailBody ───────────────────────────────────────────────
+// Body rendered inside the global PushDrawer when a card is opened.
+// Reads hiddenSet from UIStore directly so the toggle button reflects
+// changes without re-pushing the whole drawer body to drawerStore.
+function ModelDetailBody({
+  m,
+  hidden,
+  onOpenSettings,
+  onToggleHidden,
+}: {
+  m: ModelItem;
+  hidden: boolean;
+  onOpenSettings: () => void;
+  onToggleHidden: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="p-5 space-y-4 text-sm">
+      <div>
+        <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_provider")}</div>
+        <div className="font-mono text-xs">{m.provider}/{m.id}</div>
+      </div>
+      {m.aliases && m.aliases.length > 0 && (
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.aliases")}</div>
+          <div className="flex flex-wrap gap-1">
+            {m.aliases.map((a) => (
+              <span key={a} className="px-2 py-0.5 rounded-md bg-main text-[10px] font-mono">{a}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_tier")}</div>
+          {m.tier ? (
+            <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${tierClass(m.tier)}`}>
+              {t(`models.tier_${m.tier}`, { defaultValue: m.tier })}
+            </span>
+          ) : "—"}
+        </div>
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_context")}</div>
+          <span className="font-mono">{formatCtx(m.context_window)}</span>
+        </div>
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_input")}</div>
+          <span className="font-mono">${m.input_cost_per_m ?? 0} / M</span>
+        </div>
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_output")}</div>
+          <span className="font-mono">${m.output_cost_per_m ?? 0} / M</span>
+        </div>
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.max_output")}</div>
+          <span className="font-mono">{formatCtx(m.max_output_tokens)}</span>
+        </div>
+        <div>
+          <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.availability")}</div>
+          <span>{m.available ? <span className="text-success font-bold">●</span> : <span className="text-text-dim">○</span>} {m.available ? t("models.available") : t("models.no_key")}</span>
+        </div>
+      </div>
+      <div>
+        <div className="text-[10px] font-bold text-text-dim uppercase mb-1.5">{t("models.capabilities")}</div>
+        <div className="flex flex-wrap gap-2">
+          {([
+            ["tools", m.supports_tools, Wrench] as const,
+            ["vision", m.supports_vision, Eye] as const,
+            ["streaming", m.supports_streaming, Zap] as const,
+            ["thinking", m.supports_thinking, Brain] as const,
+          ]).map(([key, on, Icon]) => (
+            <span key={key} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-bold ${
+              on ? "border-brand/30 bg-brand/10 text-brand" : "border-border-subtle text-text-dim/40"
+            }`}>
+              <Icon className="w-3 h-3" />
+              {t(`models.col_${key}`)}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2 pt-2 border-t border-border-subtle/50">
+        <Button variant="primary" className="flex-1" onClick={onOpenSettings}>
+          <Settings className="w-4 h-4 mr-1.5" />
+          {t("models.settings_title")}
+        </Button>
+        <Button variant="secondary" onClick={onToggleHidden}>
+          {hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+        </Button>
       </div>
     </div>
   );
@@ -330,6 +423,8 @@ export function ModelsPage() {
     }
   };
 
+  const detailHidden = detailModel ? hiddenSet.has(modelKey(detailModel)) : false;
+
   const inputClass = "w-full rounded-xl border border-border-subtle bg-main px-3 py-2 text-sm outline-none focus:border-brand";
 
   return (
@@ -450,87 +545,32 @@ export function ModelsPage() {
         </div>
       )}
 
-      {/* Detail drawer (preview before going into Settings) */}
-      {detailModel && (
-        <Modal isOpen onClose={() => setDetailModel(null)} title={detailModel.display_name || detailModel.id} size="md" variant="panel-right">
-          <div className="p-5 space-y-4 text-sm">
-            <div>
-              <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_provider")}</div>
-              <div className="font-mono text-xs">{detailModel.provider}/{detailModel.id}</div>
-            </div>
-            {detailModel.aliases && detailModel.aliases.length > 0 && (
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.aliases")}</div>
-                <div className="flex flex-wrap gap-1">
-                  {detailModel.aliases.map(a => (
-                    <span key={a} className="px-2 py-0.5 rounded-md bg-main text-[10px] font-mono">{a}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_tier")}</div>
-                {detailModel.tier ? (
-                  <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${tierClass(detailModel.tier)}`}>
-                    {t(`models.tier_${detailModel.tier}`, { defaultValue: detailModel.tier })}
-                  </span>
-                ) : "—"}
-              </div>
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_context")}</div>
-                <span className="font-mono">{formatCtx(detailModel.context_window)}</span>
-              </div>
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_input")}</div>
-                <span className="font-mono">${detailModel.input_cost_per_m ?? 0} / M</span>
-              </div>
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.col_output")}</div>
-                <span className="font-mono">${detailModel.output_cost_per_m ?? 0} / M</span>
-              </div>
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.max_output")}</div>
-                <span className="font-mono">{formatCtx(detailModel.max_output_tokens)}</span>
-              </div>
-              <div>
-                <div className="text-[10px] font-bold text-text-dim uppercase mb-1">{t("models.availability")}</div>
-                <span>{detailModel.available ? <span className="text-success font-bold">●</span> : <span className="text-text-dim">○</span>} {detailModel.available ? t("models.available") : t("models.no_key")}</span>
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] font-bold text-text-dim uppercase mb-1.5">{t("models.capabilities")}</div>
-              <div className="flex flex-wrap gap-2">
-                {([
-                  ["tools", detailModel.supports_tools, Wrench] as const,
-                  ["vision", detailModel.supports_vision, Eye] as const,
-                  ["streaming", detailModel.supports_streaming, Zap] as const,
-                  ["thinking", detailModel.supports_thinking, Brain] as const,
-                ]).map(([key, on, Icon]) => (
-                  <span key={key} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-bold ${
-                    on ? "border-brand/30 bg-brand/10 text-brand" : "border-border-subtle text-text-dim/40"
-                  }`}>
-                    <Icon className="w-3 h-3" />
-                    {t(`models.col_${key}`)}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="flex gap-2 pt-2 border-t border-border-subtle/50">
-              <Button variant="primary" className="flex-1" onClick={() => { setSettingsModel(detailModel); setDetailModel(null); }}>
-                <Settings className="w-4 h-4 mr-1.5" />
-                {t("models.settings_title")}
-              </Button>
-              <Button variant="secondary" onClick={() => { toggleHidden(detailModel); setDetailModel(null); }}>
-                {hiddenSet.has(modelKey(detailModel)) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {/* Detail drawer — pushes content via the global slot, mirroring
+          the sidebar collapse instead of overlaying the page. */}
+      <DrawerPanel
+        isOpen={!!detailModel}
+        onClose={() => setDetailModel(null)}
+        title={detailModel ? (detailModel.display_name || detailModel.id) : undefined}
+        size="md"
+      >
+        {detailModel && (
+          <ModelDetailBody
+            m={detailModel}
+            hidden={detailHidden}
+            onOpenSettings={() => {
+              setSettingsModel(detailModel);
+              setDetailModel(null);
+            }}
+            onToggleHidden={() => {
+              toggleHidden(detailModel);
+              setDetailModel(null);
+            }}
+          />
+        )}
+      </DrawerPanel>
 
       {/* Add Model Modal */}
-      <Modal isOpen={showAdd} onClose={resetForm} title={t("models.add_custom_model")} size="lg" variant="panel-right">
+      <DrawerPanel isOpen={showAdd} onClose={resetForm} title={t("models.add_custom_model")} size="lg">
         <form onSubmit={handleAdd} className="p-5 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
@@ -588,7 +628,7 @@ export function ModelsPage() {
             <Button type="button" variant="secondary" onClick={() => resetForm()}>{t("common.cancel")}</Button>
           </div>
         </form>
-      </Modal>
+      </DrawerPanel>
 
       {/* Model Settings Modal */}
       {settingsModel && (
@@ -714,16 +754,16 @@ function ModelSettingsModal({ model, onClose, onSaved, onReset, onError }: {
 
   if (overridesQuery.isLoading) {
     return (
-      <Modal isOpen onClose={onClose} title={t("models.settings_title")} size="lg" variant="panel-right">
+      <DrawerPanel isOpen onClose={onClose} title={t("models.settings_title")} size="lg">
         <div className="flex items-center justify-center p-12">
           <Loader2 className="w-6 h-6 animate-spin text-brand" />
         </div>
-      </Modal>
+      </DrawerPanel>
     );
   }
 
   return (
-    <Modal isOpen onClose={onClose} title={t("models.settings_title")} size="lg" variant="panel-right">
+    <DrawerPanel isOpen onClose={onClose} title={t("models.settings_title")} size="lg">
       <div className="p-5 space-y-5">
         {/* Model header */}
         <div className="flex items-center gap-3">
@@ -856,6 +896,6 @@ function ModelSettingsModal({ model, onClose, onSaved, onReset, onError }: {
           </Button>
         </div>
       </div>
-    </Modal>
+    </DrawerPanel>
   );
 }
