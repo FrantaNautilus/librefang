@@ -63,6 +63,29 @@ fn check_capability(
             return Ok(());
         }
     }
+    // macOS aliases /tmp → /private/tmp, /var → /private/var, /etc → /private/etc
+    // at the firmlink layer, so safe_resolve_path's canonicalize() always
+    // pushes guest-supplied paths under /private/. Strip the prefix so
+    // operator grants written against the user-facing path (/tmp/*, /var/log/*, …)
+    // match the canonicalised value.
+    if cfg!(target_os = "macos") {
+        let aliased = match required {
+            Capability::FileRead(p) => p
+                .strip_prefix("/private/")
+                .map(|rest| Capability::FileRead(format!("/{rest}"))),
+            Capability::FileWrite(p) => p
+                .strip_prefix("/private/")
+                .map(|rest| Capability::FileWrite(format!("/{rest}"))),
+            _ => None,
+        };
+        if let Some(aliased) = aliased {
+            for granted in capabilities {
+                if capability_matches(granted, &aliased) {
+                    return Ok(());
+                }
+            }
+        }
+    }
     Err(json!({"error": format!("Capability denied: {required:?}")}))
 }
 
