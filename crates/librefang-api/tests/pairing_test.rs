@@ -77,8 +77,9 @@ async fn boot_with_pairing(enabled: bool, public_base_url: Option<String>) -> Ha
         config_write_lock: tokio::sync::Mutex::new(()),
         pending_a2a_agents: dashmap::DashMap::new(),
         auth_login_limiter: std::sync::Arc::new(
-            librefang_api::rate_limiter::AuthLoginLimiter::new(0),
+            librefang_api::rate_limiter::AuthLoginLimiter::new(),
         ),
+        gcra_limiter: librefang_api::rate_limiter::create_rate_limiter(0),
     });
 
     let app = Router::new()
@@ -246,7 +247,9 @@ async fn remove_device_drops_bearer_from_live_auth_table() {
     assert_eq!(h.state.user_api_keys.read().await.len(), 1);
 
     let status = delete_request(&h, &format!("/api/pairing/devices/{device_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    // DELETE on a successful resource removal returns 204 No Content
+    // (the endpoint emits no body, so 204 is more correct than 200).
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // The bearer must be gone — otherwise a "revoked" device's stored
     // key would keep authenticating until the next process restart.
