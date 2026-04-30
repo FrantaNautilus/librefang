@@ -533,6 +533,14 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
     } else {
         match candidate.finish_reason.as_deref() {
             Some("MAX_TOKENS") => StopReason::MaxTokens,
+            // Safety / policy refusals — surface so caller can react (#3450).
+            Some("SAFETY")
+            | Some("RECITATION")
+            | Some("BLOCKLIST")
+            | Some("PROHIBITED_CONTENT")
+            | Some("SPII")
+            | Some("IMAGE_SAFETY")
+            | Some("LANGUAGE") => StopReason::ContentFiltered,
             _ => StopReason::EndTurn,
         }
     };
@@ -598,11 +606,13 @@ pub(crate) async fn stream_gemini_sse(
     let mut fn_calls: Vec<(String, serde_json::Value, Option<String>)> = Vec::new();
     let mut finish_reason: Option<String> = None;
     let mut usage = TokenUsage::default();
+    // Buffers partial UTF-8 codepoints across chunk boundaries (#3448).
+    let mut utf8 = crate::utf8_stream::Utf8StreamDecoder::new();
 
     let mut byte_stream = resp.bytes_stream();
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.push_str(&utf8.decode(&chunk));
 
         while let Some((pos, delim_len)) = buffer
             .find("\r\n\r\n")
@@ -715,6 +725,11 @@ pub(crate) async fn stream_gemini_sse(
         }
     }
 
+    // Drain any partial codepoint left in the decoder so a CJK
+    // character truncated by the final chunk surfaces explicitly
+    // rather than silently disappearing (#3448).
+    buffer.push_str(&utf8.finish());
+
     // Build final response
     let mut content = Vec::new();
     let mut tool_calls = Vec::new();
@@ -759,7 +774,14 @@ pub(crate) async fn stream_gemini_sse(
     let stop_reason = match finish_reason.as_deref() {
         Some("STOP") => StopReason::EndTurn,
         Some("MAX_TOKENS") => StopReason::MaxTokens,
-        Some("SAFETY") => StopReason::EndTurn,
+        // Safety / policy refusals — surface so caller can react (#3450).
+        Some("SAFETY")
+        | Some("RECITATION")
+        | Some("BLOCKLIST")
+        | Some("PROHIBITED_CONTENT")
+        | Some("SPII")
+        | Some("IMAGE_SAFETY")
+        | Some("LANGUAGE") => StopReason::ContentFiltered,
         _ => {
             if !tool_calls.is_empty() {
                 StopReason::ToolUse
@@ -1020,6 +1042,8 @@ impl LlmDriver for GeminiDriver {
             let mut finish_reason: Option<String> = None;
             let mut usage = TokenUsage::default();
             let mut receiver_dropped = false;
+            // Buffers partial UTF-8 codepoints across chunk boundaries (#3448).
+            let mut utf8 = crate::utf8_stream::Utf8StreamDecoder::new();
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
@@ -1028,7 +1052,7 @@ impl LlmDriver for GeminiDriver {
                     break;
                 }
                 let chunk = chunk_result.map_err(|e| LlmError::Http(e.to_string()))?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                buffer.push_str(&utf8.decode(&chunk));
 
                 // Process complete SSE events (delimited by \n\n or \r\n\r\n)
                 while let Some((pos, delim_len)) = buffer
@@ -1168,6 +1192,11 @@ impl LlmDriver for GeminiDriver {
                 }
             }
 
+            // Drain any partial codepoint left in the decoder so a CJK
+            // character truncated by the final chunk surfaces explicitly
+            // rather than silently disappearing (#3448).
+            buffer.push_str(&utf8.finish());
+
             // Build final response
             let mut content = Vec::new();
             let mut tool_calls = Vec::new();
@@ -1212,7 +1241,14 @@ impl LlmDriver for GeminiDriver {
             let stop_reason = match finish_reason.as_deref() {
                 Some("STOP") => StopReason::EndTurn,
                 Some("MAX_TOKENS") => StopReason::MaxTokens,
-                Some("SAFETY") => StopReason::EndTurn,
+                // Safety / policy refusals — surface so caller can react (#3450).
+                Some("SAFETY")
+                | Some("RECITATION")
+                | Some("BLOCKLIST")
+                | Some("PROHIBITED_CONTENT")
+                | Some("SPII")
+                | Some("IMAGE_SAFETY")
+                | Some("LANGUAGE") => StopReason::ContentFiltered,
                 _ => {
                     if !tool_calls.is_empty() {
                         StopReason::ToolUse
