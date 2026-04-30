@@ -225,7 +225,14 @@ impl OpenAIDriver {
         use base64::Engine;
         use sha2::{Digest, Sha256};
 
-        for msg in &mut request.messages {
+        // `request.messages` is `Arc<Vec<Message>>` (#3766). Get an exclusive
+        // `&mut Vec<Message>` via `Arc::make_mut` — when the refcount is 1
+        // (the common case: fresh `CompletionRequest` for this call) this is
+        // O(1); on a shared Arc it clones once, which is unavoidable since
+        // we must mutate. Without this, `for msg in &mut request.messages`
+        // doesn't compile because `Arc<Vec<_>>` only derefs to `&Vec<_>`.
+        let messages = std::sync::Arc::make_mut(&mut request.messages);
+        for msg in messages.iter_mut() {
             let blocks = match &mut msg.content {
                 MessageContent::Blocks(b) => b,
                 _ => continue,
@@ -645,7 +652,7 @@ impl OpenAIDriver {
         }
 
         // Convert messages
-        for msg in &request.messages {
+        for msg in request.messages.iter() {
             match (&msg.role, &msg.content) {
                 (Role::System, MessageContent::Text(text)) if request.system.is_none() => {
                     oai_messages.push(OaiMessage {
@@ -2369,12 +2376,12 @@ mod tests {
         let driver = OpenAIDriver::new("".to_string(), "http://127.0.0.1:11434/v1".to_string());
         let request = CompletionRequest {
             model: "qwen3:8b".to_string(),
-            messages: vec![librefang_types::message::Message {
+            messages: std::sync::Arc::new(vec![librefang_types::message::Message {
                 role: librefang_types::message::Role::User,
                 content: librefang_types::message::MessageContent::Text("hi".to_string()),
                 pinned: false,
                 timestamp: None,
-            }],
+            }]),
             tools: vec![],
             max_tokens: 256,
             temperature: 0.7,
@@ -2397,12 +2404,12 @@ mod tests {
         let driver = OpenAIDriver::new("".to_string(), "http://127.0.0.1:11434/v1".to_string());
         let request = CompletionRequest {
             model: "qwen3:8b".to_string(),
-            messages: vec![librefang_types::message::Message {
+            messages: std::sync::Arc::new(vec![librefang_types::message::Message {
                 role: librefang_types::message::Role::User,
                 content: librefang_types::message::MessageContent::Text("hi".to_string()),
                 pinned: false,
                 timestamp: None,
-            }],
+            }]),
             tools: vec![],
             max_tokens: 256,
             temperature: 0.7,
@@ -2425,12 +2432,12 @@ mod tests {
         let driver = OpenAIDriver::new("k".to_string(), "https://api.openai.com/v1".to_string());
         let request = CompletionRequest {
             model: "gpt-4o".to_string(),
-            messages: vec![librefang_types::message::Message {
+            messages: std::sync::Arc::new(vec![librefang_types::message::Message {
                 role: librefang_types::message::Role::User,
                 content: librefang_types::message::MessageContent::Text("hi".to_string()),
                 pinned: false,
                 timestamp: None,
-            }],
+            }]),
             tools: vec![],
             max_tokens: 256,
             temperature: 0.7,
