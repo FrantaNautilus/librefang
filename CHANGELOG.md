@@ -886,6 +886,11 @@ In-crate only; no cross-crate error-shape changes.
 
 ### Added
 
+- **observability: `librefang_tool_call_total` now carries an `agent` label** (#6226) (@houko).
+  The counter added in #3495 was labeled only by `tool` and `outcome`, so tool failures could not be attributed per-agent.
+  It is now `librefang_tool_call_total{agent, tool, outcome}`, mirroring the existing per-agent `librefang_cron_fires_total{agent}` precedent.
+  The agent id is threaded from `session.agent_id` into `record_tool_call_metric` at every call site (serial and parallel dispatch paths) and sanitized + length-capped exactly like the `tool` label, so a hallucinated or hostile caller id cannot blow up metric cardinality.
+  Closes #6226.
 - **dashboard: guide the user to start a new session when a conversation hits the token / context-window limit** (#6211) (@houko).
   When the latest turn in the agent chat fails with a token / context-window or length / quota limit, the chat view now shows an inline guidance banner with a one-click "Start a new session" action that reuses the existing `useCreateAgentSession` mutation, instead of leaving only a raw error bubble.
   Detection is a frontend heuristic over the daemon / provider error string (`isContextLimitError`), because the chat surface carries no structured per-turn context-exhaustion signal; the heuristic matches the canonical phrases the kernel's `classify_streaming_error` emits and explicitly suppresses the banner for an internal usage / spending-budget cap (where a new session would not help).
