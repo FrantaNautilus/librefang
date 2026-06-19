@@ -900,6 +900,11 @@ In-crate only; no cross-crate error-shape changes.
 
 ### Added
 
+- **observability: tool-call telemetry fidelity — failure-type breakdown, per-tool latency histogram, and span error status** (#6228) (@houko).
+  `librefang_tool_call_total` gains a bounded `failure_type` label that no longer collapses every failure to one `outcome=failure` bucket: a loop-guard / allowlist block (`blocked`), an approval denial or modify-and-retry (`approval_denied`), a tool timeout (`timeout`), a genuine crash (`hard_error`), and a circuit break (`circuit_break`) are now distinguishable on a dashboard.
+  The label is derived from the existing `ToolExecutionStatus` (`Skipped → blocked`, `Denied`/`ModifyAndRetry → approval_denied`, `Expired → timeout`, `Error → hard_error`, no-status circuit break → `circuit_break`); the success path carries `failure_type=none`.
+  A new `librefang_tool_execution_seconds{tool}` histogram exports the per-tool dispatch latency that was already measured for the decision trace (`execution_ms / 1000.0`), so latency distributions are now visible per tool.
+  The `execute_single_tool_call` span now records `tool.outcome` and sets the OpenTelemetry span status to error (`otel.status_code=error`) on a genuine service failure (hard error, circuit break, or timeout) — but not on a model-fat-fingered blocked / denied call — so a `hasError=true` trace filter and service-level errorRate finally match a failed tool. Closes #6228.
 - **dashboard(agents): edit the system prompt and bind a prompt-library version from the agent detail drawer** (#6187) (@houko).
   The Agents page previously showed the system prompt read-only and the "Prompts" modal's activate only flipped the store's active flag without changing the live prompt; the Hands page already had a full editor (#6151 / #6166), leaving the two pages inconsistent.
   `SystemPromptSection` is now an inline editor: edit and save via `PATCH /api/agents/{id}`, or open the prompt library and bind a saved version via `useBindPromptVersionToAgent` (which hot-swaps the live `system_prompt` and flips `is_active` together).
