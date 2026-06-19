@@ -900,6 +900,11 @@ In-crate only; no cross-crate error-shape changes.
 
 ### Added
 
+- **dashboard(agents): group the Agents list into Core Agents and Hands sections** (#6189) (@houko).
+  The Agents page rendered every agent in one flat list, with hand-role agents distinguished only by a small per-row badge.
+  The already-filtered and -sorted list is now split on the `is_hand` flag into two titled sections (using the pre-seeded `agents.core_agents` / `agents.hands` i18n keys); each header only shows when its group is non-empty, so the `Show hands` toggle keeps its meaning and a single-group view shows no empty banner.
+  Presentational only — no data-layer, query, or backend change.
+  Closes #6189.
 - **observability: tool-call telemetry fidelity — failure-type breakdown, per-tool latency histogram, and span error status** (#6228) (@houko).
   `librefang_tool_call_total` gains a bounded `failure_type` label that no longer collapses every failure to one `outcome=failure` bucket: a loop-guard / allowlist block (`blocked`), an approval denial or modify-and-retry (`approval_denied`), a tool timeout (`timeout`), a genuine crash (`hard_error`), and a circuit break (`circuit_break`) are now distinguishable on a dashboard.
   The label is derived from the existing `ToolExecutionStatus` (`Skipped → blocked`, `Denied`/`ModifyAndRetry → approval_denied`, `Expired → timeout`, `Error → hard_error`, no-status circuit break → `circuit_break`); the success path carries `failure_type=none`.
